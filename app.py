@@ -546,5 +546,11 @@ st.divider()
 st.caption(
     "QuantDesk is a technical analysis tool, not investment advice. Backtested edge is measured on "
     "past data for this symbol and timeframe only and does not predict future returns. "
-    "Every plan shown assumes the stop is honoured."
+    "Every plan shown assumes the stop is honoured. Trading carries risk of loss."
+)
+st.caption(
+    "Charts by [TradingView Lightweight Charts](https://www.tradingview.com/), used under the "
+    "Apache-2.0 licence. Market data via yfinance from Yahoo Finance — not affiliated with or "
+    "endorsed by Yahoo; provided for personal, research and educational use. "
+    "QuantDesk itself is MIT licensed — see NOTICE."
 )

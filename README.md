@@ -271,3 +271,32 @@ The rest covers the strategy contract (boolean, aligned, NaN-free rule series), 
 placement on the correct side and within a sane ATR distance, backtest metric bounds and
 trade-ordering invariants, monotonic cost impact, target ordering, position sizing risking
 exactly the requested amount, Fibonacci level bracketing, and symbol/currency resolution.
+
+---
+
+## Licence & attribution
+
+QuantDesk is released under the **MIT Licence** — see [LICENSE](LICENSE). You may use,
+modify and redistribute it freely, including commercially, provided the copyright notice
+is kept.
+
+Third-party components and obligations are recorded in [NOTICE](NOTICE). Two are worth
+calling out here:
+
+**TradingView Lightweight Charts** (`assets/lwc.js`, v4.2.3) is bundled with this repo
+under the Apache-2.0 licence, whose terms include a **mandatory attribution requirement**:
+TradingView must be credited and a link to <https://www.tradingview.com/> must appear on
+the user-facing page. This is satisfied by the library's built-in `attributionLogo` (the
+mark on each chart pane) plus the footer credit. **Do not disable `attributionLogo` or
+remove the footer attribution** without providing that link elsewhere — it would breach
+the licence. The full Apache-2.0 text ships at
+[`assets/LICENSE-lightweight-charts.txt`](assets/LICENSE-lightweight-charts.txt).
+
+**Market data** comes from Yahoo Finance via yfinance, which is not affiliated with or
+endorsed by Yahoo and whose authors state the API is intended for personal, research and
+educational use. This project is offered on that basis. Anyone deploying it should check
+Yahoo's terms for their own case, and obtain a licensed data feed before commercial use.
+
+**Not financial advice.** QuantDesk is a technical analysis tool. Nothing it produces is
+investment advice or a recommendation to trade. Backtested edge describes past behaviour,
+not future returns, and trading carries risk of loss.

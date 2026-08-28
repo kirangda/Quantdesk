@@ -1,0 +1,61 @@
+QuantDesk
+Copyright (c) 2026 kirangda
+
+This product is licensed under the MIT License (see LICENSE).
+
+================================================================================
+Third-party components redistributed with this software
+================================================================================
+
+TradingView Lightweight Charts™
+--------------------------------
+Bundled at: assets/lwc.js  (v4.2.3)
+Copyright (c) 2025 TradingView, Inc.
+Licensed under the Apache License, Version 2.0.
+Full licence text: assets/LICENSE-lightweight-charts.txt
+Source: https://github.com/tradingview/lightweight-charts
+
+The Apache-2.0 licence for this component carries an attribution requirement:
+TradingView must be identified as the creator of the charting library, and a
+link to https://www.tradingview.com/ must be present on the user-facing page.
+
+QuantDesk satisfies this through the library's built-in `attributionLogo`
+chart option, which renders the TradingView mark and link on each chart pane,
+and through the attribution line in the application footer and README.
+
+DO NOT disable `attributionLogo` or remove the footer attribution without
+providing the required TradingView link somewhere else on the page — doing so
+would breach the licence.
+
+================================================================================
+Dependencies installed from PyPI (not redistributed here)
+================================================================================
+
+These are declared in requirements.txt and installed by pip at deploy time;
+their licences apply to their own distributions:
+
+  streamlit  - Apache License 2.0
+  yfinance   - Apache License 2.0
+  pandas     - BSD 3-Clause
+  numpy      - BSD 3-Clause
+  plotly     - MIT
+
+================================================================================
+Market data
+================================================================================
+
+Market data is retrieved through yfinance from Yahoo Finance. yfinance is not
+affiliated with, endorsed by, or vetted by Yahoo, Inc., and its authors state
+that the Yahoo Finance API is intended for personal, research and educational
+use. This project is provided on the same basis. Anyone deploying it should
+review Yahoo's terms of use for their own situation, and should obtain a
+licensed market data feed before any commercial use.
+
+================================================================================
+Not financial advice
+================================================================================
+
+QuantDesk is a technical analysis tool. Nothing it produces is investment
+advice, a recommendation, or an offer to trade. Backtested results describe
+past behaviour of a symbol on a timeframe and do not predict future returns.
+Trading carries risk of loss. See the warranty disclaimer in LICENSE.
