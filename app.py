@@ -4,6 +4,8 @@ Run with:  streamlit run app.py
 """
 from __future__ import annotations
 
+import dataclasses
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -77,9 +79,21 @@ def get_beta(symbol: str, interval: str, native: str):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_fair_value(symbol: str, interval: str, price: float):
+def _fair_value_raw(symbol: str, interval: str):
+    """Fundamentals only. Cached per SYMBOL, not per price.
+
+    Valuation does not depend on bar size, so keying the cache on the interval
+    or the live price would refetch Yahoo every time you switch timeframe and
+    let a moving analyst target make the answer look unstable when it is not.
+    """
     inst, _ = load(symbol, interval)
-    return fair_value(inst, price)
+    return fair_value(inst, float("nan"))
+
+
+def get_fair_value(symbol: str, interval: str, price: float):
+    """The cached valuation, compared against the price currently on screen."""
+    fv = _fair_value_raw(symbol, interval)
+    return dataclasses.replace(fv, price=price)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
