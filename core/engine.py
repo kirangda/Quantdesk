@@ -342,7 +342,7 @@ def analyse(
 ) -> Analysis:
     """Full pipeline: features -> backtests -> live plans -> fused verdict."""
     intraday = interval not in ("1d", "1wk", "1mo")
-    f = build_features(df, intraday=intraday)
+    f = build_features(df, intraday=intraday, interval=interval)
 
     plans: list[Plan] = []
     for strat in strategies_for(style):

@@ -1,6 +1,6 @@
 """The strategy book.
 
-Sixteen independent, well-documented systems. Each one publishes:
+Nineteen independent, well-documented systems. Each one publishes:
 
   * entry / exit boolean series for both directions (used by the backtester)
   * an ATR stop multiple and reward:risk profile (used by risk sizing)
@@ -18,14 +18,20 @@ import numpy as np
 import pandas as pd
 
 from . import indicators as ta
+from .data import bars_per_year
 from .fibonacci import retracement_series
 
 
 # --------------------------------------------------------------------------
 # Shared feature frame
 # --------------------------------------------------------------------------
-def build_features(df: pd.DataFrame, intraday: bool = False) -> pd.DataFrame:
-    """Compute every indicator once; all strategies read from this frame."""
+def build_features(df: pd.DataFrame, intraday: bool = False,
+                   interval: str = "1d") -> pd.DataFrame:
+    """Compute every indicator once; all strategies read from this frame.
+
+    `interval` lets the long-horizon features mean the same thing in calendar
+    terms whether the bars are daily, weekly or monthly.
+    """
     f = df.copy()
     o, h, l, c, v = f["open"], f["high"], f["low"], f["close"], f["volume"]
 
@@ -112,6 +118,26 @@ def build_features(df: pd.DataFrame, intraday: bool = False) -> pd.DataFrame:
         f["or_low"] = np.nan
         f["bar_of_day"] = 0
         f["or_bars"] = 0
+
+    # --- calendar-scaled long-horizon features ----------------------------
+    # 10 months, 12 months and 1 month expressed in bars of THIS interval, so
+    # the Faber and momentum rules mean the same thing on daily and monthly data
+    bpy = bars_per_year(interval)
+    per_month = max(1, int(round(bpy / 12)))
+    m10 = max(3, int(round(bpy * 10 / 12)))
+    m12 = max(4, int(round(bpy)))
+    f["ma_10mo"] = ta.sma(c, m10)
+    f["above_10mo"] = (c > f["ma_10mo"]).astype(float)
+    # 12-month return skipping the most recent month - the classic momentum
+    # window, which deliberately omits the short-term reversal effect
+    f["ret_12_1"] = (c.shift(per_month) / c.shift(m12) - 1.0) * 100.0
+
+    # distance from a long-run anchor, in standard deviations
+    anchor = max(6, int(round(bpy * 3)))
+    log_c = np.log(c.replace(0, np.nan))
+    f["value_anchor"] = np.exp(log_c.rolling(anchor, min_periods=max(6, anchor // 3)).mean())
+    dev = log_c - np.log(f["value_anchor"])
+    f["value_z"] = dev / dev.rolling(anchor, min_periods=max(6, anchor // 3)).std(ddof=0)
 
     f["fib_retr"] = retracement_series(f)
     f["swing_low_20"] = l.rolling(20, min_periods=5).min()
@@ -227,6 +253,7 @@ class TrendPullback(Strategy):
             stop_atr=1.5,
             targets_r=(1.0, 2.0, 3.5),
             max_hold=30,
+            styles={"swing", "day", "long"},
         )
 
     def rules(self, f):
@@ -341,6 +368,7 @@ class MACDMomentum(Strategy):
             stop_atr=2.0,
             targets_r=(1.0, 2.0, 3.0),
             max_hold=35,
+            styles={"swing", "day", "long"},
         )
 
     def rules(self, f):
@@ -401,6 +429,7 @@ class FibGoldenPocket(Strategy):
             stop_atr=1.2,
             targets_r=(1.2, 2.2, 3.6),
             max_hold=30,
+            styles={"swing", "day", "long"},
         )
 
     def rules(self, f):
@@ -494,6 +523,7 @@ class SqueezeBreakout(Strategy):
             stop_atr=1.8,
             targets_r=(1.0, 2.0, 3.5),
             max_hold=30,
+            styles={"swing", "day", "long"},
         )
 
     def rules(self, f):
@@ -614,7 +644,7 @@ class GoldenCross(Strategy):
                 "each reclaim of the 50 SMA while that regime holds. Slow and "
                 "low-frequency, but it holds whole trends."
             ),
-            styles={"swing"},
+            styles={"swing", "long"},
             stop_atr=2.5, targets_r=(1.5, 3.0, 5.0), max_hold=120,
         )
 
@@ -719,7 +749,7 @@ class TurtleBreakout(Strategy):
                 "high, exit on a 20-bar low, stop at 2 ATR. No trend filter and no "
                 "confirmation - it accepts a low hit-rate to catch the rare huge move."
             ),
-            styles={"swing"},
+            styles={"swing", "long"},
             stop_atr=2.0, targets_r=(2.0, 4.0, 6.0), max_hold=90,
         )
 
@@ -768,6 +798,7 @@ class IchimokuCloud(Strategy):
                 "Kijun doubles as the trailing exit, which is what keeps it in long trends."
             ),
             stop_atr=2.0, targets_r=(1.5, 3.0, 4.5), max_hold=60,
+            styles={"swing", "day", "long"},
         )
 
     def rules(self, f):
@@ -899,6 +930,7 @@ class RSIDivergence(Strategy):
                 "Pivots are only counted once confirmed, so the signal is never early."
             ),
             stop_atr=1.5, targets_r=(1.5, 2.5, 4.0), max_hold=25,
+            styles={"swing", "day", "long"},
         )
 
     def rules(self, f):
@@ -940,7 +972,7 @@ class VCPBreakout(Strategy):
                 "volume surge. The stop is tight - the pattern is wrong the moment it "
                 "loses the base. Long only, by design."
             ),
-            styles={"swing"},
+            styles={"swing", "long"},
             stop_atr=1.5, targets_r=(2.0, 4.0, 6.0), max_hold=45,
             allow_short=False,
         )
@@ -995,6 +1027,7 @@ class HeikinAshiTrend(Strategy):
                 "candle of the opposite colour."
             ),
             stop_atr=2.0, targets_r=(1.5, 3.0, 4.5), max_hold=40,
+            styles={"swing", "day", "long"},
         )
 
     def rules(self, f):
@@ -1110,6 +1143,161 @@ class GapFade(Strategy):
 
 
 # --------------------------------------------------------------------------
+# 17. Faber tactical allocation
+# --------------------------------------------------------------------------
+class FaberTactical(Strategy):
+    def __init__(self):
+        super().__init__(
+            key="faber_tactical",
+            name="Faber 10-Month Tactical",
+            family="Position",
+            blurb=(
+                "Meb Faber's tactical rule, and one of the most-replicated results "
+                "in the literature: hold while the close is above its 10-month moving "
+                "average, step aside when it drops below. It does not try to beat "
+                "buy-and-hold on return - it aims to sidestep the deep drawdowns."
+            ),
+            styles={"long", "swing"},
+            stop_atr=3.0, targets_r=(2.0, 4.0, 8.0), max_hold=400,
+            allow_short=False,
+        )
+
+    def rules(self, f):
+        c = f["close"]
+        long_entry = cross_above(c, f["ma_10mo"])
+        long_exit = cross_below(c, f["ma_10mo"])
+        never = pd.Series(False, index=f.index)
+        return Rules(_b(long_entry), _b(long_exit), never, never)
+
+    def entry_reference(self, f, direction):
+        r = f.iloc[-1]
+        last, ma = float(r["close"]), float(r["ma_10mo"])
+        if not np.isfinite(ma):
+            return last
+        return last if last > ma else ma * 1.002
+
+    def stop_price(self, f, entry, direction):
+        r = f.iloc[-1]
+        ma, atr = float(r["ma_10mo"]), float(r["atr"])
+        # The rule's own exit is the moving average, so the stop belongs there -
+        # but only for the long side, which is the only side this strategy takes.
+        # Anchoring a short to the same line would put the stop below entry.
+        if direction == "LONG" and np.isfinite(ma) and np.isfinite(atr) and ma < entry:
+            return ma - 0.25 * atr
+        return super().stop_price(f, entry, direction)
+
+    def checklist(self, f, direction):
+        r = f.iloc[-1]
+        above = bool(r["close"] > r["ma_10mo"])
+        dist = (r["close"] / r["ma_10mo"] - 1) * 100 if np.isfinite(r["ma_10mo"]) else float("nan")
+        return [
+            ("Above the 10-month average", above,
+             f"{r['close']:.2f} vs {r['ma_10mo']:.2f} ({dist:+.1f}%)"),
+            ("Not stretched far above it", bool(np.isfinite(dist) and dist < 25),
+             f"{dist:+.1f}% above the line"),
+            ("Long-term trend intact", bool(r["close"] > r["sma200"]),
+             f"200-period SMA {r['sma200']:.2f}"),
+            ("Volatility survivable", bool(r["atr_pct"] < 8), f"ATR {r['atr_pct']:.2f}%"),
+        ]
+
+
+# --------------------------------------------------------------------------
+# 18. 12-1 momentum
+# --------------------------------------------------------------------------
+class Momentum12_1(Strategy):
+    def __init__(self):
+        super().__init__(
+            key="momentum_12_1",
+            name="12-1 Momentum",
+            family="Position",
+            blurb=(
+                "The academic momentum factor (Jegadeesh & Titman): rank on the last "
+                "twelve months of return but skip the most recent month, because the "
+                "very short term tends to mean-revert. Holds while momentum stays "
+                "positive and price holds its 10-month average."
+            ),
+            styles={"long", "swing"},
+            stop_atr=3.0, targets_r=(2.0, 4.0, 6.0), max_hold=300,
+            allow_short=False,
+        )
+
+    def rules(self, f):
+        c = f["close"]
+        strong = _b(f["ret_12_1"] > 0) & _b(c > f["ma_10mo"])
+        long_entry = strong & _b(~strong.shift(1).fillna(False))
+        long_exit = _b((f["ret_12_1"] < 0) | (c < f["ma_10mo"]))
+        never = pd.Series(False, index=f.index)
+        return Rules(_b(long_entry), long_exit, never, never)
+
+    def checklist(self, f, direction):
+        r = f.iloc[-1]
+        return [
+            ("12-month momentum positive", bool(r["ret_12_1"] > 0),
+             f"{r['ret_12_1']:+.1f}% over 12 months, last month excluded"),
+            ("Above the 10-month average", bool(r["close"] > r["ma_10mo"]),
+             f"{r['close']:.2f} vs {r['ma_10mo']:.2f}"),
+            ("Momentum still building",
+             bool(r["ret_12_1"] > f["ret_12_1"].iloc[-2]) if len(f) > 2 else False,
+             "rising" if len(f) > 2 and r["ret_12_1"] > f["ret_12_1"].iloc[-2] else "cooling"),
+            ("Not a blow-off top", bool(r["rsi14"] < 82), f"RSI {r['rsi14']:.1f}"),
+        ]
+
+
+# --------------------------------------------------------------------------
+# 19. Long-run value reversion
+# --------------------------------------------------------------------------
+class LongRunValue(Strategy):
+    def __init__(self):
+        super().__init__(
+            key="long_run_value",
+            name="Long-Run Value Reversion",
+            family="Value",
+            blurb=(
+                "The backtestable cousin of the fair-value panel. Instead of "
+                "fundamentals - which are only available as today's snapshot and so "
+                "cannot be honestly backtested - this anchors to the symbol's own "
+                "three-year average price and buys statistically deep discounts to it, "
+                "but only once price has started turning back up."
+            ),
+            styles={"long", "swing"},
+            stop_atr=2.5, targets_r=(1.5, 3.0, 5.0), max_hold=200,
+        )
+
+    def rules(self, f):
+        c = f["close"]
+        cheap = _b(f["value_z"] < -1.25)
+        rich = _b(f["value_z"] > 1.75)
+        turning_up = _b(c > c.shift(1)) & _b(f["rsi14"] > 35)
+        turning_dn = _b(c < c.shift(1)) & _b(f["rsi14"] < 65)
+
+        long_entry = cheap & turning_up & _b(c > f["ema20"])
+        short_entry = rich & turning_dn & _b(c < f["ema20"])
+        long_exit = _b((f["value_z"] > -0.1) | (c < f["value_anchor"] * 0.75))
+        short_exit = _b((f["value_z"] < 0.4) | (c > f["value_anchor"] * 1.25))
+        return Rules(long_entry, long_exit, short_entry, short_exit)
+
+    def entry_reference(self, f, direction):
+        return float(f["close"].iloc[-1])
+
+    def checklist(self, f, direction):
+        r = f.iloc[-1]
+        up = direction == "LONG"
+        z = float(r["value_z"])
+        return [
+            ("Statistically far from the long-run mean",
+             bool(z < -1.25) if up else bool(z > 1.75),
+             f"{z:+.2f} standard deviations from the 3-year anchor"),
+            ("Anchor price", bool(np.isfinite(r["value_anchor"])),
+             f"3-year average {r['value_anchor']:.2f} vs price {r['close']:.2f}"),
+            ("Price already turning back",
+             bool(r["close"] > f["close"].iloc[-2]) == up if len(f) > 2 else False,
+             "turning up" if len(f) > 2 and r["close"] > f["close"].iloc[-2] else "still falling"),
+            ("Not a broken chart", bool(35 < r["rsi14"] < 65) or (bool(r["rsi14"] > 35) if up else bool(r["rsi14"] < 65)),
+             f"RSI {r['rsi14']:.1f}"),
+        ]
+
+
+# --------------------------------------------------------------------------
 ALL_STRATEGIES: list[Strategy] = [
     TrendPullback(),
     RSI2Reversion(),
@@ -1127,6 +1315,9 @@ ALL_STRATEGIES: list[Strategy] = [
     HeikinAshiTrend(),
     StochasticPullback(),
     GapFade(),
+    FaberTactical(),
+    Momentum12_1(),
+    LongRunValue(),
 ]
 
 

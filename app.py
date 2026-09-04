@@ -8,13 +8,15 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core.charting import THEMES, equity_chart, price_chart, score_gauge
-from core.data import (DAY_INTERVALS, DISPLAY_CURRENCIES, SWING_INTERVALS,
-                       currency_symbol, fetch, fx_rate, native_currency,
-                       normalise_symbol)
+from core.charting import (THEMES, beta_chart, equity_chart, price_chart,
+                           score_gauge)
+from core.data import (DAY_INTERVALS, DISPLAY_CURRENCIES, LONG_INTERVALS,
+                       SWING_INTERVALS, currency_symbol, fetch, fx_rate,
+                       native_currency, normalise_symbol)
 from core.engine import analyse, size_position
 from core.fibonacci import describe, level_rows
 from core import tvchart
+from core.valuation import fair_value, load_beta
 from core.backtest import trades_frame
 
 st.set_page_config(page_title="QuantDesk", page_icon="", layout="wide",
@@ -66,6 +68,18 @@ def stat(value: float, fmt_spec: str = "+.2f", suffix: str = "") -> str:
 def load(symbol: str, interval: str):
     inst = normalise_symbol(symbol)
     return inst, fetch(inst, interval)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_beta(symbol: str, interval: str, native: str):
+    inst, df = load(symbol, interval)
+    return load_beta(inst, df, native, interval)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_fair_value(symbol: str, interval: str, price: float):
+    inst, _ = load(symbol, interval)
+    return fair_value(inst, price)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -122,11 +136,14 @@ with st.sidebar:
 
     symbol = st.text_input("Symbol", value="AAPL",
                            help="Stocks: AAPL, NVDA, TSLA, RELIANCE.NS  |  Crypto: BTC, ETH, SOL  |  Index: SPX, NIFTY")
-    style = st.radio("Trading style", ["Swing", "Day"], horizontal=True,
-                     help="Swing uses daily bars and multi-day holds. Day uses intraday bars and same-session holds.")
-    style_key = style.lower()
+    style = st.radio(
+        "Trading style", ["Swing", "Day", "Long-term"], horizontal=True,
+        help="Day: intraday bars, same-session holds. Swing: daily bars, multi-day holds. "
+             "Long-term: weekly/monthly bars, positions held months to years.")
+    style_key = {"Swing": "swing", "Day": "day", "Long-term": "long"}[style]
 
-    intervals = SWING_INTERVALS if style_key == "swing" else DAY_INTERVALS
+    intervals = {"swing": SWING_INTERVALS, "day": DAY_INTERVALS,
+                 "long": LONG_INTERVALS}[style_key]
     interval = st.selectbox("Timeframe", intervals, index=0)
 
     st.divider()
@@ -281,8 +298,9 @@ with right:
 st.divider()
 
 # ---- tabs -----------------------------------------------------------------
-tab_chart, tab_strats, tab_bt, tab_levels = st.tabs(
-    ["Chart", f"Strategies ({len(a.plans)})", "Backtests", "Levels & context"]
+tab_chart, tab_strats, tab_bt, tab_levels, tab_val = st.tabs(
+    ["Chart", f"Strategies ({len(a.plans)})", "Backtests", "Levels & context",
+     "Valuation & risk"]
 )
 
 with tab_chart:
@@ -541,6 +559,121 @@ with tab_levels:
         grid[i % 6].markdown(
             f"<div class='qd-label'>{k}</div><div class='qd-sub' style='font-size:15px'>{v}</div>",
             unsafe_allow_html=True)
+
+
+with tab_val:
+    vcol1, vcol2 = st.columns([1, 1])
+
+    # ---- beta / alpha ----------------------------------------------------
+    with vcol1:
+        st.markdown("#### Market risk (beta)")
+        try:
+            bt = get_beta(symbol, interval, native_ccy)
+        except Exception as exc:  # noqa: BLE001
+            bt = None
+            st.warning(f"Beta unavailable: {exc}")
+
+        if bt is None or not bt.ok:
+            if bt is not None and bt.error:
+                st.info(bt.error)
+        else:
+            b1, b2, b3 = st.columns(3)
+            b1.metric("Beta", f"{bt.beta:.2f}", bt.label, delta_color="off")
+            b2.metric("Alpha (annual)", f"{bt.alpha_annual:+.1f}%")
+            b3.metric("R-squared", f"{bt.r_squared * 100:.0f}%")
+            st.markdown(f"<div class='qd-sub'>{bt.meaning}</div>", unsafe_allow_html=True)
+
+            v1, v2 = st.columns(2)
+            v1.markdown(
+                f"<div class='qd-label'>Volatility (annual)</div>"
+                f"<div class='qd-sub' style='font-size:15px'>{bt.asset_vol:.1f}% "
+                f"vs {bt.bench_vol:.1f}% for the {bt.benchmark_name}</div>",
+                unsafe_allow_html=True)
+            v2.markdown(
+                f"<div class='qd-label'>Correlation</div>"
+                f"<div class='qd-sub' style='font-size:15px'>{bt.correlation:+.2f} "
+                f"over {bt.observations} bars</div>",
+                unsafe_allow_html=True)
+
+            # what beta means for the position actually being recommended
+            if np.isfinite(rec.entry) and np.isfinite(rec.stop) and abs(bt.beta) > 0.05:
+                szb = size_position(account, risk_pct, rec.entry * RATE, rec.stop * RATE)
+                beta_adj = szb["notional"] * bt.beta
+                st.markdown(
+                    f"<div class='qd-sub' style='margin-top:10px'>The recommended "
+                    f"{shown(szb['notional'])} position carries "
+                    f"<b>{shown(beta_adj)}</b> of {bt.benchmark_name}-equivalent exposure "
+                    f"at a beta of {bt.beta:.2f}. If you hold other correlated positions, "
+                    f"that is the number that stacks up, not the cash amount.</div>",
+                    unsafe_allow_html=True)
+
+            if not bt.rolling.empty:
+                st.plotly_chart(
+                    beta_chart(bt, theme), width="stretch",
+                    config={"displayModeBar": False})
+
+    # ---- fundamental fair value -----------------------------------------
+    with vcol2:
+        st.markdown("#### Fair value")
+        try:
+            fv = get_fair_value(symbol, interval, ctx.price)
+        except Exception as exc:  # noqa: BLE001
+            fv = None
+            st.warning(f"Fair value unavailable: {exc}")
+
+        if fv is None or not fv.applicable:
+            if fv is not None:
+                st.info(fv.reason)
+        else:
+            tone = (T["good"] if fv.upside_pct > 10 else
+                    T["critical"] if fv.upside_pct < -10 else T["warning"])
+            st.markdown(
+                f"<div class='qd-label'>Blended estimate vs {money(fv.price)}</div>"
+                f"<div style='font-size:26px;font-weight:700;color:{tone}'>"
+                f"{money(fv.blended)}</div>"
+                f"<div class='fib-chip' style='background:{tone}22;color:{tone}'>"
+                f"{fv.upside_pct:+.1f}% · {fv.verdict}</div>",
+                unsafe_allow_html=True)
+            if fv.sector:
+                st.markdown(f"<div class='qd-sub' style='margin-top:6px'>{fv.sector}"
+                            f"{' · ' + fv.industry if fv.industry else ''}</div>",
+                            unsafe_allow_html=True)
+
+            st.markdown("<div class='qd-label' style='margin-top:12px'>How each model "
+                        "gets there</div>", unsafe_allow_html=True)
+            rows = [{"Model": e.method, "Value": money(e.value),
+                     "vs price": f"{(e.value / fv.price - 1) * 100:+.1f}%",
+                     "Basis": e.detail} for e in fv.estimates]
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
+
+            if fv.spread_warning:
+                st.warning(fv.spread_warning, icon="⚠️")
+            for sk in fv.skipped:
+                st.caption(f"· {sk}")
+
+            mets = {k: v for k, v in fv.metrics.items() if v is not None}
+            if mets:
+                st.markdown("<div class='qd-label' style='margin-top:10px'>Key multiples"
+                            "</div>", unsafe_allow_html=True)
+                mcols = st.columns(4)
+                for i, (k, v) in enumerate(mets.items()):
+                    mcols[i % 4].markdown(
+                        f"<div class='qd-label'>{k}</div>"
+                        f"<div class='qd-sub' style='font-size:15px'>{v:,.2f}</div>",
+                        unsafe_allow_html=True)
+
+    st.divider()
+    st.caption(
+        "**Beta and alpha are measured from price history** and update with the data. "
+        "**Fair value is not backtested and cannot be.** It is built from *today's* "
+        "fundamentals — yfinance exposes only the current snapshot, not what earnings or "
+        "book value were five years ago — so there is no honest way to score it as a "
+        "strategy, and it takes no part in the composite verdict. Treat it as one input "
+        "among several. The backtestable equivalent is the **Long-Run Value Reversion** "
+        "strategy, which anchors to price history instead of fundamentals. Every model "
+        "here is crude and assumption-heavy; the spread between them is usually more "
+        "informative than the blend."
+    )
 
 st.divider()
 st.caption(

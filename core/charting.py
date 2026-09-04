@@ -497,3 +497,36 @@ def score_gauge(score: float, theme: str = "dark") -> go.Figure:
         font=dict(color=c["text_secondary"]),
     )
     return fig
+
+
+def beta_chart(bt, theme: str = "dark") -> go.Figure:
+    """Rolling beta - shows whether the market sensitivity is stable or drifting."""
+    c = THEMES[theme]
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=bt.rolling.index, y=bt.rolling.to_numpy(), mode="lines", name="Rolling beta",
+            line=dict(color=c["accent"], width=2),
+            hovertemplate="%{x|%d %b %Y}<br>beta %{y:.2f}<extra></extra>",
+        )
+    )
+    # 1.0 is the reference: moving exactly with the benchmark
+    fig.add_hline(y=1.0, line=dict(color=c["muted"], width=1, dash="dash"),
+                  annotation_text="market (1.0)", annotation_position="top left",
+                  annotation_font=dict(size=10, color=c["muted"]))
+    fig.add_hline(y=float(bt.beta), line=dict(color=c["good"], width=1.5),
+                  annotation_text=f"full-period {bt.beta:.2f}",
+                  annotation_position="bottom left",
+                  annotation_font=dict(size=10, color=c["good"]))
+    fig.update_layout(
+        template="plotly_dark" if theme == "dark" else "plotly_white",
+        paper_bgcolor=c["surface"], plot_bgcolor=c["surface"],
+        font=dict(color=c["text_secondary"], size=11),
+        title=dict(text=f"Rolling beta vs {bt.benchmark_name}",
+                   font=dict(color=c["text"], size=13), x=0.01, xanchor="left"),
+        height=240, margin=dict(l=8, r=8, t=40, b=8), showlegend=False, hovermode="x",
+    )
+    fig.update_xaxes(showgrid=False, linecolor=c["grid"])
+    fig.update_yaxes(showgrid=True, gridcolor=c["grid"], zeroline=False,
+                     side="right", linecolor=c["grid"])
+    return fig

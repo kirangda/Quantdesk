@@ -72,9 +72,22 @@ MARKETS = {
     "gappy": _series(seed=4, gaps=True),
 }
 
-FEATURES = {k: build_features(v, intraday=False) for k, v in MARKETS.items()}
-INTRADAY_F = build_features(_intraday(), intraday=True)
+FEATURES = {k: build_features(v, intraday=False, interval="1d") for k, v in MARKETS.items()}
+INTRADAY_F = build_features(_intraday(), intraday=True, interval="15m")
+# a long, low-frequency series for the position-trading book
+MONTHLY = _series(n=300, seed=7, drift=0.008, vol=0.055)
+MONTHLY.index = pd.date_range("2001-01-31", periods=300, freq="ME")
+MONTHLY_F = build_features(MONTHLY, intraday=False, interval="1mo")
 INST = Instrument("TEST", "TEST", "equity")
+
+
+def _frame_for(strat, market="uptrend"):
+    """Feed each strategy a series whose bar size matches the style it targets."""
+    if strat.styles == {"day"}:
+        return INTRADAY_F
+    if "long" in strat.styles and "swing" not in strat.styles:
+        return MONTHLY_F
+    return FEATURES[market]
 
 
 # --------------------------------------------------------------------------
@@ -83,7 +96,7 @@ INST = Instrument("TEST", "TEST", "equity")
 @pytest.mark.parametrize("strat", ALL_STRATEGIES, ids=lambda s: s.key)
 def test_rules_shape(strat):
     """Every rule set is boolean, full-length and aligned to the input index."""
-    f = INTRADAY_F if strat.styles == {"day"} else FEATURES["uptrend"]
+    f = _frame_for(strat, "uptrend")
     r = strat.rules(f)
     for name in ("long_entry", "long_exit", "short_entry", "short_exit"):
         s = getattr(r, name)
@@ -98,13 +111,13 @@ def test_no_shorts_when_disallowed(strat):
     """A long-only strategy must never emit a short entry."""
     if strat.allow_short:
         pytest.skip("strategy permits shorts")
-    f = INTRADAY_F if strat.styles == {"day"} else FEATURES["uptrend"]
+    f = _frame_for(strat, "uptrend")
     assert not strat.rules(f).short_entry.any()
 
 
-def _last_bar_signals(strat, raw, cut, intraday):
+def _last_bar_signals(strat, raw, cut, intraday, interval="1d"):
     """What the strategy would have said in real time at bar `cut - 1`."""
-    r = strat.rules(build_features(raw.iloc[:cut], intraday=intraday))
+    r = strat.rules(build_features(raw.iloc[:cut], intraday=intraday, interval=interval))
     return bool(r.long_entry.iloc[-1]), bool(r.short_entry.iloc[-1])
 
 
@@ -119,13 +132,14 @@ def test_no_lookahead(strat):
     `close.shift(-1)` rule - see test_lookahead_detector_works.)
     """
     intraday = strat.styles == {"day"}
-    full_f = INTRADAY_F if intraday else FEATURES["choppy"]
+    full_f = _frame_for(strat, "choppy")
     raw = full_f[["open", "high", "low", "close", "volume"]]
     full = strat.rules(full_f)
 
     n = len(raw)
+    iv = "15m" if intraday else ("1mo" if full_f is MONTHLY_F else "1d")
     for cut in (n - 120, n - 90, n - 60, n - 30, n):
-        live_long, live_short = _last_bar_signals(strat, raw, cut, intraday)
+        live_long, live_short = _last_bar_signals(strat, raw, cut, intraday, iv)
         assert live_long == bool(full.long_entry.iloc[cut - 1]), (
             f"{strat.key}: long signal at bar {cut - 1} changed once future bars "
             "were available - the rule is reading ahead")
@@ -160,7 +174,7 @@ def test_lookahead_detector_works():
 @pytest.mark.parametrize("strat", ALL_STRATEGIES, ids=lambda s: s.key)
 def test_stop_is_on_the_right_side(strat):
     """Stops sit below entry for longs and above for shorts, at sane distance."""
-    f = INTRADAY_F if strat.styles == {"day"} else FEATURES["uptrend"]
+    f = _frame_for(strat, "uptrend")
     atr = float(f["atr"].iloc[-1])
     for direction in ("LONG", "SHORT"):
         entry = float(strat.entry_reference(f, direction))
@@ -181,7 +195,7 @@ def test_stop_is_on_the_right_side(strat):
 @pytest.mark.parametrize("market", sorted(MARKETS))
 @pytest.mark.parametrize("strat", ALL_STRATEGIES, ids=lambda s: s.key)
 def test_backtest_metrics_are_sane(strat, market):
-    f = INTRADAY_F if strat.styles == {"day"} else FEATURES[market]
+    f = _frame_for(strat, market)
     m = run_backtest(f, strat, interval="1d")
 
     assert m.trades >= 0
@@ -241,6 +255,29 @@ def test_zero_trade_strategy_is_flagged_not_voted():
             assert p.state == "NO DATA"
             assert p.conviction == 0.0
             assert p.action == "NOT APPLICABLE HERE"
+
+
+@pytest.mark.parametrize("style,expect_in,expect_out", [
+    ("day", "opening_range", "golden_cross"),
+    ("long", "faber_tactical", "opening_range"),
+    ("swing", "golden_cross", "opening_range"),
+])
+def test_style_books_are_distinct(style, expect_in, expect_out):
+    keys = {s.key for s in strategies_for(style)}
+    assert expect_in in keys and expect_out not in keys
+
+
+def test_long_horizon_features_are_calendar_scaled():
+    """The 10-month average must mean 10 months on daily AND monthly bars."""
+    raw = MARKETS["uptrend"]
+    daily = build_features(raw, interval="1d")["ma_10mo"].iloc[-1]
+    # resample the same prices to monthly and rebuild
+    monthly = raw.resample("ME").agg({"open": "first", "high": "max", "low": "min",
+                                      "close": "last", "volume": "sum"}).dropna()
+    m = build_features(monthly, interval="1mo")["ma_10mo"].iloc[-1]
+    assert np.isfinite(daily) and np.isfinite(m)
+    # same window in calendar terms -> the two averages should be close
+    assert abs(daily / m - 1.0) < 0.15, f"daily {daily:.2f} vs monthly {m:.2f}"
 
 
 def test_day_style_uses_the_day_book():

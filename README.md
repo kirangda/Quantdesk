@@ -2,7 +2,7 @@
 
 A multi-strategy technical analysis desk for stocks and crypto. Type a symbol, get a
 candlestick chart with EMAs, Bollinger bands, Fibonacci levels, RSI and MACD — plus
-**sixteen trading strategies evaluated side by side**, each backtested on that exact symbol
+**nineteen trading strategies evaluated side by side**, each backtested on that exact symbol
 and timeframe, each with a concrete *buy at / stop at / sell at* price.
 
 The point of the app is that it does not assert which strategy is best. It runs them
@@ -32,16 +32,16 @@ Symbols accepted:
 Pick a **display currency** (USD / EUR / GBP / INR / CHF / JPY) in the sidebar — see
 [Currency](#currency) below.
 
-Pick **Swing** (daily bars, multi-day holds) or **Day** (5m–1h bars, same-session holds)
-in the sidebar. The strategy book changes with the mode — VWAP Trend Reclaim only
+Pick **Day** (5m–1h bars, same-session), **Swing** (daily bars, multi-day) or
+**Long-term** (weekly/monthly bars, months to years) in the sidebar. The strategy book changes with the mode — VWAP Trend Reclaim only
 appears intraday, where session VWAP actually means something.
 
 ---
 
 ## The strategy book
 
-Sixteen independent systems across eight families, chosen so they disagree usefully
-rather than all firing at once. **14 run on swing, 13 on day** (some are timeframe-specific).
+Nineteen independent systems across ten families, chosen so they disagree usefully
+rather than all firing at once. **17 run on swing, 13 on day, 13 on long-term** (some are timeframe-specific).
 
 | # | Strategy | Family | The idea |
 |---|----------|--------|----------|
@@ -61,6 +61,9 @@ rather than all firing at once. **14 run on swing, 13 on day** (some are timefra
 | 14 | **Heikin-Ashi Trend Flip** | Trend following | Enters on the first strong candle after a colour flip, exits on the first candle of the other colour |
 | 15 | **Stochastic Pullback** | Mean reversion | %K dips oversold and crosses back up through %D, with price above the 200 EMA |
 | 16 | **Gap Fade** | Reversal | Fades a gap of 2%+ once the bar reverses back into the prior range, targeting the gap fill |
+| 17 | **Faber 10-Month Tactical** *(long)* | Position | Meb Faber's rule: hold above the 10-month average, step aside below. Aims to dodge deep drawdowns, not to beat buy-and-hold |
+| 18 | **12-1 Momentum** *(long)* | Position | The academic momentum factor: 12-month return excluding the most recent month, held while it stays positive |
+| 19 | **Long-Run Value Reversion** *(long)* | Value | Buys statistically deep discounts to the symbol's own 3-year anchor, once price is turning back up |
 
 Each reports one of four states:
 
@@ -111,6 +114,34 @@ rather than showing a wrong number.
 
 ---
 
+## Valuation & risk
+
+**Beta** is measured against the right benchmark for the market — the S&P 500 for US
+equities, EURO STOXX for EUR names, NIFTY for Indian ones, and **Bitcoin for alt-coins**
+(ETH shows β 1.25 with an R² of 0.83 against BTC, which is far more informative than
+measuring it against a stock index). Reported with alpha, R², correlation, both
+volatilities, and a rolling-beta chart showing whether that sensitivity is stable. The
+recommended position is also expressed as benchmark-equivalent exposure, which is the
+number that stacks up if you hold other correlated positions.
+
+**Fair value** blends up to four classic models — analyst consensus, the Graham number, a
+growth-adjusted P/E, and a perpetuity DCF on free cash flow — and reports the **median**
+plus the full spread. Two deliberate behaviours:
+
+- **Models are skipped outside their domain.** The Graham number assumes a
+  tangible-asset-heavy company; on Apple's price/book of 43 it returns ~38 against a ~317
+  price. Rather than let that drag the blend, it is dropped with the reason shown.
+- **Disagreement is surfaced, not hidden.** When the models span more than 2.5x, the app
+  says so — that spread is usually more informative than the blend.
+
+**Fair value is deliberately NOT a strategy and takes no part in the verdict.** yfinance
+exposes only today's fundamentals, not what earnings were five years ago, so a fair-value
+signal cannot be honestly backtested. Scoring it would mean inventing a number. The
+backtestable equivalent is strategy #19, which anchors to price history instead.
+Fundamentals are unavailable for crypto and indices, and the panel says so plainly.
+
+---
+
 ## How "best strategy" is decided
 
 Every strategy is backtested over the loaded history before anything is recommended.
@@ -137,10 +168,31 @@ Thin samples get pulled toward neutral rather than being allowed to look brillia
 six lucky trades. **If the out-of-sample column disagrees with the headline expectancy,
 treat the edge as unproven** — that column exists to catch curve-fitting.
 
-The **composite verdict** is an edge-weighted vote across the whole book (live signals
-count fully, forming setups at 45%, stand-downs at 10%), blended 70/30 with an objective
-regime read of trend, ADX, RSI and volatility. The recommended order comes from the
-highest-ranked strategy that agrees with that verdict.
+### The composite verdict
+
+**Every strategy in the active book votes — none is hand-picked or privileged.** Each
+one's weight is:
+
+```
+weight = (edge score / 100) × (conviction / 100) × state multiplier
+         where state multiplier = 1.00 live · 0.45 forming · 0.10 stood-down
+vote   = +1 long, −1 short
+raw    = Σ(vote × weight) / Σ(weight) × 100
+score  = 0.70 × raw + 0.30 × regime score
+```
+
+The regime score is an objective read of trend, ADX, RSI and volatility, independent of
+any strategy. Verdict bands: **±45 with a live trigger** → STRONG BUY/SELL, **±18** →
+BUY/SELL, otherwise NEUTRAL.
+
+Two things follow from this design. A strategy that backtests badly *on this symbol*
+contributes almost nothing even when it is shouting — weight scales with measured edge, so
+reputation counts for nothing. And a strategy with **no trades at all** on the loaded
+history (NO HISTORY) is excluded entirely rather than voting from ignorance.
+
+Above it sits a guard rail: if **nothing** in the book has both positive expectancy and an
+edge score ≥ 45, the verdict becomes **STAND ASIDE** regardless of what the vote said. The
+levels still show, but the app tells you the measured edge does not support the trade.
 
 ---
 

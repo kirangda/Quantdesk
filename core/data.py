@@ -14,7 +14,7 @@ import yfinance as yf
 # stale bars instead of dying when a request is throttled.
 CACHE_DIR = Path(__file__).resolve().parent.parent / ".cache"
 CACHE_TTL = {"1m": 60, "5m": 120, "15m": 300, "30m": 600, "60m": 900, "1h": 900,
-             "1d": 1800, "1wk": 3600}
+             "1d": 1800, "1wk": 3600, "1mo": 21600}
 
 # yfinance chatters about optional metadata endpoints; the download path
 # reports failures through exceptions, which we handle explicitly below
@@ -30,11 +30,15 @@ INTERVAL_LIMITS = {
     "1h": ("180d", "730d"),
     "1d": ("3y", "max"),
     "1wk": ("10y", "max"),
+    "1mo": ("25y", "max"),
 }
 
 # Timeframes the app offers per trading style
 SWING_INTERVALS = ["1d", "1wk", "1h"]
 DAY_INTERVALS = ["5m", "15m", "30m", "1h", "1m"]
+# monthly first: it reaches ~25 years, weekly only ~5, and a long-horizon
+# backtest needs the sample
+LONG_INTERVALS = ["1mo", "1wk", "1d"]
 
 COMMON_CRYPTO = {
     "BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "AVAX", "DOT", "MATIC", "LINK",
@@ -116,6 +120,8 @@ def _flatten(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
 
 PERIOD_FALLBACK = {
+    "25y": ["25y", "15y", "10y", "5y"],
+    "10y": ["10y", "5y", "2y"],
     "3y": ["3y", "2y", "1y"],
     "10y": ["10y", "5y", "2y"],
     "180d": ["180d", "90d", "60d"],
@@ -230,7 +236,7 @@ def bars_per_year(interval: str) -> float:
     """Annualisation factor for Sharpe / CAGR at a given bar size."""
     return {
         "1m": 252 * 390, "5m": 252 * 78, "15m": 252 * 26, "30m": 252 * 13,
-        "60m": 252 * 7, "1h": 252 * 7, "1d": 252, "1wk": 52,
+        "60m": 252 * 7, "1h": 252 * 7, "1d": 252, "1wk": 52, "1mo": 12,
     }.get(interval, 252)
 
 
