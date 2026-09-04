@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from .data import Instrument, bars_per_year, fetch
+from .data import Instrument, bars_per_year, fetch, fx_rate
 
 # Which index to measure beta against, by market.
 BENCHMARKS = {
@@ -175,6 +175,7 @@ class FairValue:
     metrics: dict = field(default_factory=dict)
     skipped: list = field(default_factory=list)
     spread_warning: str = ""
+    notes: list = field(default_factory=list)
 
     @property
     def upside_pct(self) -> float:
@@ -196,6 +197,54 @@ class FairValue:
         if u > -25:
             return "Overvalued"
         return "Richly valued"
+
+
+# Yahoo quotes some markets in a minor unit (London in pence, Johannesburg in
+# cents) while still reporting the financial statements in the major unit. Any
+# per-share model that mixes the two is wrong by a factor of 100.
+MINOR_UNIT = {"GBP": "GBp", "ZAR": "ZAc", "ILS": "ILA"}
+
+
+MAJOR_OF = {v: k for k, v in MINOR_UNIT.items()}      # GBp -> GBP
+
+
+def statement_scale(info: dict):
+    """Factor converting statement figures into the quote currency.
+
+    Two independent adjustments can apply and both are handled:
+      * a minor-unit quote (London prices in pence, accounts in pounds) -> x100
+      * a genuinely different reporting currency (BP reports in USD but trades
+        in pence in London) -> converted at the live FX rate
+
+    Returns (factor, note, ok). `ok` is False when the mismatch could not be
+    reconciled, in which case the caller must not publish a blended value.
+    """
+    quote = (info.get("currency") or "").strip()
+    fin = (info.get("financialCurrency") or "").strip()
+    if not quote or not fin or quote == fin:
+        return 1.0, "", True
+
+    minor_factor = 100.0 if quote in MAJOR_OF else 1.0
+    quote_major = MAJOR_OF.get(quote, quote)
+
+    if fin == quote_major:
+        return minor_factor, (
+            f"{info.get('exchange', 'This market')} quotes in {quote} while the "
+            f"accounts are reported in {fin}; per-share figures are scaled by 100 "
+            "so they compare against the price."), True
+
+    try:
+        rate = fx_rate(fin, quote_major)
+    except Exception:  # noqa: BLE001 - reconciliation failed, say so loudly
+        return 1.0, (
+            f"Price is quoted in {quote} but the accounts are reported in {fin}, "
+            "and the exchange rate could not be fetched to reconcile them. No fair "
+            "value is shown, because mixing the two would be off by the FX rate."), False
+
+    note = (f"Accounts are reported in {fin} while the stock trades in {quote}; "
+            f"figures are converted at {fin}/{quote_major} {rate:,.4f}"
+            + (" and scaled from the major unit to " + quote if minor_factor > 1 else "") + ".")
+    return rate * minor_factor, note, True
 
 
 def _num(info: dict, key: str):
@@ -231,22 +280,36 @@ def fair_value(instrument: Instrument, price: float,
         fv.reason = f"Could not load fundamentals for {instrument.symbol}: {exc}"
         return fv
 
-    if not info or _num(info, "trailingEps") is None and _num(info, "targetMeanPrice") is None:
-        fv.reason = f"No usable fundamentals returned for {instrument.symbol}."
+    if not info:
+        fv.reason = f"Yahoo returned no fundamentals for {instrument.symbol}."
         return fv
 
     fv.sector = info.get("sector", "") or ""
     fv.industry = info.get("industry", "") or ""
 
-    eps = _num(info, "trailingEps")
-    feps = _num(info, "forwardEps")
-    bvps = _num(info, "bookValue")
+    scale, scale_note, reconciled = statement_scale(info)
+    if not reconciled:
+        fv.reason = scale_note
+        return fv
+    if scale_note:
+        fv.notes.append(scale_note)
+
+    def _stmt(key):
+        """A statement figure, restated into the quote currency."""
+        v = _num(info, key)
+        return None if v is None else v * scale
+
+    # per-share and cash-flow figures come from the accounts -> scaled
+    eps = _stmt("trailingEps")
+    feps = _stmt("forwardEps")
+    bvps = _stmt("bookValue")
+    fcf = _stmt("freeCashflow")
+    debt = _stmt("totalDebt") or 0.0
+    cash = _stmt("totalCash") or 0.0
+    # these are already in the quote currency / unitless -> untouched
     growth = _num(info, "earningsGrowth")
     target = _num(info, "targetMeanPrice")
-    fcf = _num(info, "freeCashflow")
     shares = _num(info, "sharesOutstanding")
-    debt = _num(info, "totalDebt") or 0.0
-    cash = _num(info, "totalCash") or 0.0
 
     fv.metrics = {
         "Trailing P/E": _num(info, "trailingPE"),
@@ -307,8 +370,13 @@ def fair_value(instrument: Instrument, price: float,
                     f"discounted at {discount_rate * 100:.0f}%, net of debt"))
 
     if not est:
-        fv.reason = ("Fundamentals were returned but none of the models could run - "
-                     "typically negative earnings and no analyst coverage.")
+        have = [k for k in ("trailingEps", "forwardEps", "bookValue", "freeCashflow",
+                            "targetMeanPrice") if _num(info, k) is not None]
+        fv.reason = (
+            "Fundamentals came back but none of the models could run on them. "
+            + (f"Present: {', '.join(have)}. " if have else "None of the needed fields were present. ")
+            + "This usually means negative earnings, no analyst coverage, or a "
+              "financial/trust structure the models do not fit.")
         return fv
 
     vals = [e.value for e in est if np.isfinite(e.value) and e.value > 0]

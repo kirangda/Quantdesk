@@ -27,6 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from core.backtest import run_backtest                       # noqa: E402
 from core.data import Instrument, currency_symbol, native_currency, normalise_symbol  # noqa: E402
 from core.engine import analyse, size_position               # noqa: E402
+from core.valuation import fair_value, statement_scale       # noqa: E402
 from core.fibonacci import detect_leg, describe, level_rows  # noqa: E402
 from core.strategies import (ALL_STRATEGIES, Rules, _b, build_features,  # noqa: E402
                              strategies_for)
@@ -344,6 +345,51 @@ def test_symbol_and_currency_resolution(raw, resolved, ccy):
     assert inst.symbol == resolved
     assert native_currency(inst) == ccy
     assert currency_symbol(ccy)
+
+
+# --------------------------------------------------------------------------
+# Statement-currency reconciliation
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("quote,fin,expect_factor,expect_ok", [
+    ("USD", "USD", 1.0, True),      # the ordinary case
+    ("EUR", "EUR", 1.0, True),
+    ("GBp", "GBP", 100.0, True),    # London: pence quote, pounds accounts
+    ("ZAc", "ZAR", 100.0, True),    # Johannesburg: cents quote, rand accounts
+    ("", "", 1.0, True),            # nothing reported -> assume consistent
+    ("USD", "", 1.0, True),
+])
+def test_statement_scale_minor_units(quote, fin, expect_factor, expect_ok):
+    """A pence-quoted stock reporting in pounds must be scaled by 100.
+
+    Without this, every per-share model on an LSE listing is out by 100x - the
+    bug that made Taylor Wimpey look 98% overvalued when it was not.
+    """
+    factor, note, ok = statement_scale({"currency": quote, "financialCurrency": fin})
+    assert factor == expect_factor
+    assert ok is expect_ok
+    if expect_factor != 1.0:
+        assert note, "a scaling adjustment must explain itself"
+
+
+def test_statement_scale_refuses_unreconcilable_currencies(monkeypatch):
+    """If the FX rate cannot be fetched, publish nothing rather than a wrong number."""
+    import core.valuation as val
+
+    def boom(*_a, **_k):
+        raise RuntimeError("no network")
+
+    monkeypatch.setattr(val, "fx_rate", boom)
+    factor, note, ok = val.statement_scale({"currency": "GBp", "financialCurrency": "USD"})
+    assert ok is False, "an unreconcilable mismatch must not be reported as usable"
+    assert factor == 1.0 and "could not be fetched" in note
+
+
+def test_fair_value_needs_fundamentals():
+    """Crypto has no accounts; the panel must say so instead of inventing a number."""
+    fv = fair_value(Instrument("BTC-USD", "BTC", "crypto"), 50_000.0)
+    assert not fv.applicable
+    assert "fundamentals" in fv.reason.lower()
+    assert not np.isfinite(fv.blended)
 
 
 def test_empty_symbol_rejected():

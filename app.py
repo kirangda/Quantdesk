@@ -646,6 +646,8 @@ with tab_val:
                      "Basis": e.detail} for e in fv.estimates]
             st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
+            for n in fv.notes:
+                st.caption(f"· {n}")
             if fv.spread_warning:
                 st.warning(fv.spread_warning, icon="⚠️")
             for sk in fv.skipped:
